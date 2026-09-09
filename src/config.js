@@ -6,6 +6,9 @@ const config = {
   webhookVerifyToken: process.env.WEBHOOK_VERIFY_TOKEN,
   graphApiToken: process.env.GRAPH_API_TOKEN,
   phoneNumberId: process.env.PHONE_NUMBER_ID,
+  // Railway menyuntikkan DATABASE_URL otomatis saat service Postgres di-attach.
+  // Jika kosong, storage fallback ke file JSON lokal — tanpa error.
+  databaseUrl: process.env.DATABASE_URL,
   graphApiVersion: 'v20.0',
   timezone: 'Asia/Jakarta',
 };

@@ -50,7 +50,8 @@ app.get('/', (req, res) => {
 
 app.listen(config.port, () => {
   const ready = validateConfig();
-  console.log(`🤖 Server Nooji Bot Keuangan berjalan di port ${config.port}`);
+  const { backend } = require('./src/storage');
+  console.log(`🤖 Server Nooji Bot Keuangan berjalan di port ${config.port} (database: ${backend})`);
   if (!ready) {
     console.warn('⚠️  Beberapa ENV belum diisi — bot akan menolak kirim pesan sampai lengkap.');
   }

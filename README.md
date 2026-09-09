@@ -12,6 +12,16 @@ Variabel yang dibutuhkan — **sama seperti semula, tidak ada penambahan**:
 | `WEBHOOK_VERIFY_TOKEN` | Token verifikasi webhook Meta |
 | `GRAPH_API_TOKEN` | Access token Meta Graph API |
 | `PHONE_NUMBER_ID` | ID nomor WhatsApp Business |
+| `DATABASE_URL` | Opsional — koneksi PostgreSQL (**disuntik otomatis oleh Railway**) |
+
+## 🚀 Deploy ke Railway
+
+1. Buat project → add service dari repo ini
+2. Add **PostgreSQL** dari marketplace Railway → variabel `DATABASE_URL` otomatis tersambung ke service bot
+3. Isi 4 ENV lainnya di tab Variables
+4. Deploy — skema tabel (`transactions`, `budgets`) dibuat otomatis saat startup
+
+Kalau `DATABASE_URL` kosong (misal jalan lokal), bot otomatis fallback ke file `data/db.json`.
 
 ## 🚀 Menjalankan
 
@@ -47,7 +57,7 @@ src/
   config.js       # Konfigurasi ENV
   bot.js          # Mesin perintah & balasan
   money.js        # Parser nominal gaya Indonesia
-  storage.js      # Penyimpanan JSON atomik (data/db.json)
+  storage.js      # PostgreSQL (Railway) + fallback JSON (data/db.json)
   whatsapp.js     # Pengiriman pesan via Graph API
 ```
 
