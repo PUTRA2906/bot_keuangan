@@ -1,6 +1,6 @@
 // Mesin utama bot keuangan: routing perintah, pencatatan, laporan, anggaran.
 // Semua akses data lewat src/storage.js (PostgreSQL di Railway, JSON fallback lokal).
-const { extractAmount, formatRupiah } = require('./money');
+const { extractAmount, formatRupiah, formatShort } = require('./money');
 const storage = require('./storage');
 const { sendText } = require('./whatsapp');
 
@@ -19,6 +19,7 @@ const ALIAS = {
   list: ['transaksi', 'tx', 'list', 'l'],
   delete: ['hapus', 'delete', 'd'],
   help: ['help', 'bantuan', 'menu', 'h'],
+  archive: ['arsip', 'riwayat tutup'],
 };
 
 function matchAlias(cmd, list) {
@@ -31,7 +32,17 @@ function parseArgs(text) {
 }
 
 function monthKey(date = new Date()) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  // Selalu WIB (Asia/Jakarta) — server Railway bisa berjalan di UTC.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta' }).format(date).slice(0, 7);
+}
+
+// 'YYYY-MM' dari tanggal ISO apa pun, dihitung dalam WIB.
+function ymOf(dateLike) {
+  return monthKey(new Date(dateLike));
+}
+
+function dayOfMonth() {
+  return Number(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta' }).format(new Date()).slice(8, 10));
 }
 
 function todayLabel() {
@@ -60,13 +71,18 @@ function parseMonthFilter(text) {
   const ym = text.match(/(\d{4})-(\d{1,2})/);
   if (ym) return `${ym[1]}-${String(Number(ym[2])).padStart(2, '0')}`;
   const idx = NAMA_BULAN.findIndex((n) => text.toLowerCase().includes(n.toLowerCase().slice(0, 4)));
-  if (idx >= 0) return `${new Date().getFullYear()}-${String(idx + 1).padStart(2, '0')}`;
+  if (idx >= 0) return `${monthKey().slice(0, 4)}-${String(idx + 1).padStart(2, '0')}`;
   return null;
 }
 
 // ---- Transaksi (in/out) ----
 // Format: "out 20rb makan siang" atau "out makan 20rb" — nominal & kategori fleksibel posisinya.
 async function handleTransaction(userId, type, text) {
+  // Bulan tertutup = terkunci dari pencatatan baru (prinsip dasar tutup buku).
+  if (await storage.isMonthClosed(userId, monthKey())) {
+    return `🔒 Bulan *${labelBulan(monthKey())}* sudah ditutup — pencatatan dikunci.\nBuka dulu: _buka ${monthKey()}_`;
+  }
+
   // Tolak nominal negatif eksplisit: "in -50rb" bukan pemasukan minus, tapi salah ketik.
   if (/[-−–]\s*\d/.test(text)) {
     return `⚠️ Nominal tidak boleh negatif.\nContoh: _${type === 'expenses' ? 'out 50rb makan siang' : 'in 5jt gaji'}_`;
@@ -134,7 +150,7 @@ async function handleReport(userId, text) {
   const exp = s.monthOut;
   const net = inc - exp;
   const lines = [
-    `📈 *LAPORAN ${labelBulan(key)}*`,
+    `📈 *LAPORAN ${labelBulan(key)}*${(await storage.isMonthClosed(userId, key)) ? ' 🔒' : ''}`,
     `_${todayLabel()}_`,
     '',
     `💰 Masuk: *${formatRupiah(inc)}*`,
@@ -206,6 +222,11 @@ async function handleDelete(userId, text) {
   const idMatch = text.match(/#?(\d+)/);
   if (!idMatch) return '⚠️ Sebutkan ID transaksi.\nContoh: _hapus 3_';
   const id = Number(idMatch[1]);
+  // Jangan izinkan penghapusan transaksi di bulan yang sudah ditutup.
+  const bulanTx = await storage.txMonth(userId, id);
+  if (bulanTx && (await storage.isMonthClosed(userId, bulanTx))) {
+    return `🔒 Transaksi #${id} ada di bulan *${labelBulan(bulanTx)}* yang sudah ditutup.\nBuka dulu: _buka ${bulanTx}_`;
+  }
   const removed = await storage.deleteTx(userId, id);
   if (!removed) return `❌ Transaksi #${id} tidak ditemukan.`;
   if (removed === true) return `🗑 Transaksi #${id} terhapus.`;
@@ -251,16 +272,90 @@ function handleHelp() {
     '_anggaran_ → cek status budget',
     '',
     '_hapus <id>_ → hapus transaksi',
+    '',
+    '*🔐 Tutup buku*',
+    '_tutup buku_ → tutup & kunci bulan berjalan',
+    '_tutup agustus_ → tutup bulan tertentu',
+    '_arsip_ → riwayat bulan yang ditutup',
+    '_buka <bulan>_ → buka kembali bulan terkunci',
+    '',
     '_menu_ → pesan ini',
     '',
     `Kategori: ${KATEGORI_PENGELUARAN.join(', ')}`,
   ].join('\n');
 }
 
+// ---- Tutup buku ----
+async function handleCloseBook(userId, text) {
+  // "tutup buku" | "tutup buku agustus" | "tutup agustus" — kata "buku" diabaikan.
+  const arg = text.toLowerCase().replace(/\bbuku\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const key = parseMonthFilter(arg) || monthKey();
+  if (key > monthKey()) return `⚠️ Tidak bisa menutup bulan yang belum berjalan (_${labelBulan(key)}_).`;
+  if (await storage.isMonthClosed(userId, key))
+    return `🔒 Bulan *${labelBulan(key)}* sudah tertutup.\nBuka dulu dengan _buka ${key}_ kalau mau tutup ulang.`;
+
+  let result;
+  try {
+    result = await storage.closeMonth(userId, key);
+  } catch (err) {
+    if (err.userMessage) return `⚠️ ${err.userMessage}`;
+    throw err;
+  }
+  const { row, breakdown } = result;
+  const lines = [
+    `📕 *BULAN ${labelBulan(key)} DITUTUP*`,
+    `_${todayLabel()}_`,
+    '',
+    `💰 Total masuk: ${formatRupiah(row.totalIn)}`,
+    `🧾 Total keluar: ${formatRupiah(row.totalOut)}`,
+    `${row.net >= 0 ? '🟢' : '🔴'} Selisih: *${formatRupiah(row.net)}*`,
+    `📊 ${row.txCount} transaksi · saldo dibawa: *${formatRupiah(row.saldoAkhir)}*`,
+  ];
+  if (breakdown.length) {
+    lines.push('', '*Top 3 pengeluaran:*');
+    for (const [cat, val] of breakdown.slice(0, 3)) lines.push(`  ${cat}: ${formatRupiah(val)}`);
+  }
+  lines.push('', `_Transaksi bulan ini kini terkunci — _hapus_ ditolak._`, 'Lihat lagi kapan saja: _arsip_');
+  return lines.join('\n');
+}
+
+// ---- Arsip buku yang sudah ditutup ----
+async function handleArchive(userId) {
+  const list = await storage.getClosed(userId);
+  if (list.length === 0)
+    return '🗂 *Belum ada buku tertutup.*\nTutup bulan berjalan dengan perintah: _tutup buku_';
+  const lines = ['🗂 *ARSIP BUKU TERTUTUP*', ''];
+  for (const c of list.slice(-12)) {
+    const tgl = new Date(c.closed_at);
+    lines.push(
+      `🔒 *${labelBulan(c.ym)}* — masuk ${formatShort(c.totalIn)} · keluar ${formatShort(c.totalOut)}\n   net ${c.net >= 0 ? '+' : ''}${formatShort(c.net)} · saldo akhir ${formatRupiah(c.saldoAkhir)} · ${c.txCount} tx · tutup ${dayLabel(tgl)}`
+    );
+  }
+  return lines.join('\n');
+}
+
+// ---- Buka kembali bulan (untuk koreksi) ----
+async function handleReopenBook(userId, text) {
+  const arg = text.toLowerCase().replace(/\bbuku\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const key = parseMonthFilter(arg);
+  if (!key) return '⚠️ Sebutkan bulannya.\nContoh: _buka buku agustus_ atau _buka 2026-08_';
+  const ok = await storage.reopenMonth(userId, key);
+  if (!ok) return `❌ Bulan *${labelBulan(key)}* tidak dalam keadaan tertutup.`;
+  return `📖 Bulan *${labelBulan(key)}* dibuka kembali.\nTransaksinya bisa diedit/dihapus lagi. Tutup ulang dengan _tutup buku ${key}_`;
+}
+
 // ---- Router utama ----
 async function processMessage(userId, text) {
+  const lower = text.trim().toLowerCase();
   const { cmd, rest } = parseArgs(text);
   const restText = rest.join(' ');
+
+  // Perintah multi-kata didahulukan (mis. "tutup buku agustus").
+  if (lower === 'tutup buku' || lower.startsWith('tutup buku ') || matchAlias(cmd, ['tutup']) && !matchAlias(cmd, ALIAS.help))
+    return handleCloseBook(userId, lower.replace(/^tutup(\s+buku)?/, '').trim());
+  if (lower === 'buka buku' || lower.startsWith('buka buku ') || cmd === 'buka')
+    return handleReopenBook(userId, lower.replace(/^buka(\s+buku)?/, '').trim());
+  if (matchAlias(cmd, ALIAS.archive)) return handleArchive(userId);
 
   if (!cmd || matchAlias(cmd, ALIAS.help)) return handleHelp();
   if (matchAlias(cmd, ALIAS.expenses)) return handleTransaction(userId, 'expenses', restText);

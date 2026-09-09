@@ -32,6 +32,18 @@ CREATE TABLE IF NOT EXISTS budgets (
   amount   BIGINT NOT NULL,
   PRIMARY KEY (user_id, category)
 );
+
+CREATE TABLE IF NOT EXISTS closed_months (
+  user_id     TEXT        NOT NULL,
+  ym          TEXT        NOT NULL,          -- 'YYYY-MM'
+  closed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  total_in    BIGINT      NOT NULL,
+  total_out   BIGINT      NOT NULL,
+  net         BIGINT      NOT NULL,
+  saldo_akhir BIGINT      NOT NULL DEFAULT 0, -- saldo dibawa ke bulan berikutnya
+  tx_count    INTEGER     NOT NULL,
+  PRIMARY KEY (user_id, ym)
+);
 `;
 
 function pg() {
@@ -191,6 +203,139 @@ async function deleteTx(userId, id) {
   return removed;
 }
 
+// ---- TUTUP BUKU ----
+async function getClosed(userId) {
+  if (usePostgres) {
+    await pg();
+    const { rows } = await pool.query(
+      'SELECT ym, closed_at, total_in, total_out, net, saldo_akhir, tx_count FROM closed_months WHERE user_id=$1 ORDER BY ym',
+      [userId]
+    );
+    return rows.map((r) => ({
+      ym: r.ym,
+      closed_at: r.closed_at,
+      totalIn: num(r.total_in),
+      totalOut: num(r.total_out),
+      net: num(r.net),
+      saldoAkhir: num(r.saldo_akhir),
+      txCount: num(r.tx_count),
+    }));
+  }
+  return Object.values(getJsonUser(userId).closedMonths || {});
+}
+
+async function isMonthClosed(userId, ym) {
+  const list = await getClosed(userId);
+  return list.some((c) => c.ym === ym);
+}
+
+// Saldo kumulatif sampai akhir bulan tertentu (masuk - keluar, bulan <= monthKey).
+async function cumulativeBalance(userId, monthKey) {
+  if (usePostgres) {
+    await pg();
+    const { rows } = await pool.query(
+      `SELECT COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE -amount END),0)::text AS bal
+       FROM transactions
+       WHERE user_id=$1 AND created < date_trunc('month', $2::timestamptz) + interval '1 month'`,
+      [userId, monthKey + '-01']
+    );
+    return num(rows[0]?.bal);
+  }
+  return getJsonUser(userId).transactions
+    .filter((t) => t.date.slice(0, 7) <= monthKey)
+    .reduce((a, t) => a + (t.type === 'income' ? t.amount : -t.amount), 0);
+}
+
+// Tutup buku satu bulan: hitung snapshot dari transaksi berjalan, simpan ke closed_months.
+async function closeMonth(userId, monthKey) {
+  const [s, breakdownPairs, txCount, saldoAkhir] = await Promise.all([
+    summary(userId, monthKey),
+    breakdown(userId, monthKey),
+    countTxOfMonth(userId, monthKey),
+    cumulativeBalance(userId, monthKey),
+  ]);
+  if (txCount === 0) {
+    const err = new Error('EMPTY_MONTH');
+    const [y, m] = monthKey.split('-');
+    const nama = ['','Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'][Number(m)];
+    err.userMessage = `Tidak ada transaksi pada ${nama} ${y} — tidak ada yang perlu ditutup.`;
+    throw err;
+  }
+  const row = {
+    ym: monthKey,
+    closed_at: new Date().toISOString(),
+    totalIn: s.monthIn,
+    totalOut: s.monthOut,
+    net: s.monthIn - s.monthOut,
+    saldoAkhir,
+    txCount,
+  };
+
+  if (usePostgres) {
+    await pg();
+    await pool.query(
+      `INSERT INTO closed_months (user_id, ym, closed_at, total_in, total_out, net, saldo_akhir, tx_count)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (user_id, ym) DO UPDATE SET
+         closed_at=EXCLUDED.closed_at, total_in=EXCLUDED.total_in, total_out=EXCLUDED.total_out,
+         net=EXCLUDED.net, saldo_akhir=EXCLUDED.saldo_akhir, tx_count=EXCLUDED.tx_count`,
+      [userId, row.ym, row.closed_at, row.totalIn, row.totalOut, row.net, row.saldoAkhir, row.txCount]
+    );
+  } else {
+    const user = getJsonUser(userId);
+    user.closedMonths ??= {};
+    user.closedMonths[row.ym] = row;
+    saveJson();
+  }
+  return { row, breakdown: breakdownPairs };
+}
+
+async function reopenMonth(userId, monthKey) {
+  if (usePostgres) {
+    await pg();
+    const { rowCount } = await pool.query(
+      'DELETE FROM closed_months WHERE user_id=$1 AND ym=$2',
+      [userId, monthKey]
+    );
+    return rowCount > 0;
+  }
+  const user = getJsonUser(userId);
+  if (user.closedMonths?.[monthKey]) {
+    delete user.closedMonths[monthKey];
+    saveJson();
+    return true;
+  }
+  return false;
+}
+
+// Jumlah transaksi pada satu bulan.
+async function countTxOfMonth(userId, monthKey) {
+  if (usePostgres) {
+    await pg();
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM transactions
+       WHERE user_id=$1 AND date_trunc('month', created) = date_trunc('month', $2::timestamptz)`,
+      [userId, monthKey + '-01']
+    );
+    return rows[0].n;
+  }
+  return getJsonUser(userId).transactions.filter((t) => t.date.startsWith(monthKey)).length;
+}
+
+// Bulan (YYYY-MM) dari satu transaksi berdasarkan id — untuk kunci anti-hapus.
+async function txMonth(userId, id) {
+  if (usePostgres) {
+    await pg();
+    const { rows } = await pool.query(
+      `SELECT to_char(created, 'YYYY-MM') AS ym FROM transactions WHERE user_id=$1 AND id=$2`,
+      [userId, id]
+    );
+    return rows[0]?.ym ?? null;
+  }
+  const t = getJsonUser(userId).transactions.find((x) => x.id === id);
+  return t ? t.date.slice(0, 7) : null;
+}
+
 // ---- Fallback JSON lokal ----
 let jsonCache = null;
 
@@ -213,6 +358,7 @@ function getJsonUser(userId) {
   u.transactions ??= [];
   u.budgets ??= {};
   u.nextId ??= 1;
+  u.closedMonths ??= {};
   return u;
 }
 
@@ -237,4 +383,9 @@ module.exports = {
   setBudget,
   monthSpendByCategory,
   deleteTx,
+  getClosed,
+  isMonthClosed,
+  closeMonth,
+  reopenMonth,
+  txMonth,
 };
