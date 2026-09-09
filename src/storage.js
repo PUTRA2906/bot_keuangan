@@ -22,9 +22,16 @@ CREATE TABLE IF NOT EXISTS transactions (
   amount   BIGINT      NOT NULL,
   category TEXT        NOT NULL,
   note     TEXT        NOT NULL DEFAULT '',
+  account  TEXT        NOT NULL DEFAULT '',   -- nama akun/dompet (opsional)
   created  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_tx_user_date ON transactions (user_id, created);
+
+CREATE TABLE IF NOT EXISTS accounts (
+  user_id TEXT NOT NULL,
+  name    TEXT NOT NULL,                       -- 'bca', 'gopay', 'celengan'...
+  PRIMARY KEY (user_id, name)
+);
 
 CREATE TABLE IF NOT EXISTS budgets (
   user_id  TEXT   NOT NULL,
@@ -59,7 +66,7 @@ function pg() {
   }
   if (!readyPromise) {
     readyPromise = pool
-      .query(SCHEMA)
+      .query(SCHEMA + `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS account TEXT NOT NULL DEFAULT '';`)
       .then(() => console.log('[DB] PostgreSQL siap, skema dibuat/diverifikasi.'))
       .catch((err) => {
         readyPromise = null;
@@ -76,9 +83,9 @@ async function addTx(userId, tx) {
   if (usePostgres) {
     await pg();
     const { rows } = await pool.query(
-      `INSERT INTO transactions (user_id, type, amount, category, note, created)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-      [userId, tx.type, tx.amount, tx.category, tx.note, tx.date]
+      `INSERT INTO transactions (user_id, type, amount, category, note, account, created)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [userId, tx.type, tx.amount, tx.category, tx.note, tx.account || '', tx.date]
     );
     return rows[0].id;
   }
@@ -93,7 +100,7 @@ async function recentTx(userId, limit = 8) {
   if (usePostgres) {
     await pg();
     const { rows } = await pool.query(
-      `SELECT id, type, amount, category, note, created
+      `SELECT id, type, amount, category, note, account, created
        FROM transactions WHERE user_id=$1
        ORDER BY id DESC LIMIT $2`,
       [userId, limit]
@@ -322,6 +329,80 @@ async function countTxOfMonth(userId, monthKey) {
   return getJsonUser(userId).transactions.filter((t) => t.date.startsWith(monthKey)).length;
 }
 
+// ---- AKUN / DOMPET ----
+// Daftar nama akun milik user: gabungan tabel accounts + akun yang pernah muncul di transaksi.
+async function listAccounts(userId) {
+  if (usePostgres) {
+    await pg();
+    const { rows } = await pool.query(
+      `SELECT DISTINCT name FROM (
+         SELECT name FROM accounts WHERE user_id=$1
+         UNION SELECT account FROM transactions WHERE user_id=$1 AND account <> ''
+       ) t ORDER BY name`,
+      [userId]
+    );
+    return rows.map((r) => r.name);
+  }
+  const user = getJsonUser(userId);
+  const set = new Set(user.accounts || []);
+  for (const t of user.transactions) if (t.account) set.add(t.account);
+  return [...set].sort();
+}
+
+async function addAccount(userId, name) {
+  if (usePostgres) {
+    await pg();
+    await pool.query('INSERT INTO accounts (user_id, name) VALUES ($1,$2) ON CONFLICT DO NOTHING', [userId, name]);
+    return;
+  }
+  const user = getJsonUser(userId);
+  user.accounts ??= [];
+  if (!user.accounts.includes(name)) user.accounts.push(name);
+  saveJson();
+}
+
+// Saldo per akun (masuk - keluar, akumulasi semua bulan). Akun '' = transaksi tanpa akun.
+async function accountBalances(userId) {
+  if (usePostgres) {
+    await pg();
+    const { rows } = await pool.query(
+      `SELECT account,
+              COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE -amount END),0)::text AS bal,
+              COUNT(*)::int AS n
+       FROM transactions WHERE user_id=$1 GROUP BY account ORDER BY account`,
+      [userId]
+    );
+    return rows.map((r) => ({ account: r.account || '', balance: num(r.bal), count: r.n }));
+  }
+  const map = new Map();
+  for (const t of getJsonUser(userId).transactions) {
+    const a = t.account || '';
+    const cur = map.get(a) || { account: a, balance: 0, count: 0 };
+    cur.balance += t.type === 'income' ? t.amount : -t.amount;
+    cur.count += 1;
+    map.set(a, cur);
+  }
+  return [...map.values()].sort((a, b) => a.account.localeCompare(b.account));
+}
+
+// Transaksi terakhir pada satu akun ('' = transaksi tanpa akun).
+async function accountTx(userId, account, limit = 8) {
+  if (usePostgres) {
+    await pg();
+    const { rows } = await pool.query(
+      `SELECT id, type, amount, category, note, account, created
+       FROM transactions WHERE user_id=$1 AND account=$2
+       ORDER BY id DESC LIMIT $3`,
+      [userId, account, limit]
+    );
+    return rows;
+  }
+  return getJsonUser(userId).transactions
+    .filter((t) => (t.account || '') === account)
+    .slice(-limit)
+    .reverse();
+}
+
 // Bulan (YYYY-MM) dari satu transaksi berdasarkan id — untuk kunci anti-hapus.
 async function txMonth(userId, id) {
   if (usePostgres) {
@@ -359,6 +440,7 @@ function getJsonUser(userId) {
   u.budgets ??= {};
   u.nextId ??= 1;
   u.closedMonths ??= {};
+  u.accounts ??= [];
   return u;
 }
 
@@ -388,4 +470,8 @@ module.exports = {
   closeMonth,
   reopenMonth,
   txMonth,
+  listAccounts,
+  addAccount,
+  accountBalances,
+  accountTx,
 };

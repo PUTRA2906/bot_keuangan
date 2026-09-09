@@ -10,6 +10,32 @@ const KATEGORI_PENGELUARAN = [
   'kesehatan', 'pendidikan', 'lainnya',
 ];
 const KATEGORI_PEMASUKAN = ['gaji', 'bonus', 'transfer', 'hadiah', 'investasi', 'lainnya'];
+
+// Kata pemicu arah untuk kalimat natural tanpa perintah kaku:
+// "parkir 2k" → keluar, "gaji bulanan 10rb" → masuk. Kata yang muncul lebih dulu menentukan.
+const NAT_IN_WORDS = new Set(['masuk', 'gaji', 'upah', 'pendapatan', 'bonus', 'hadiah', 'transfer', 'terima', 'dapat', 'penjualan', 'cashback', 'thr', 'menang', 'kemenangan', 'rewards']);
+const NAT_OUT_WORDS = new Set(['keluar', 'beli', 'bayar', 'jajan', 'parkir', 'belanja', 'sewa', 'langganan', 'topup', 'isi', 'makan', 'minum', 'kopi', 'nonton', 'cicilan', 'kredit']);
+
+// Sinonim → kategori, supaya "bakso" otomatis masuk kategori makan, dsb.
+const CATEGORY_HINTS = {
+  makan: ['makan', 'minum', 'bakso', 'nasi', 'kopi', 'esteh', 'teh', 'mie', 'mi', 'roti', 'sate', 'gorengan', 'jajan', 'warung', 'warteg', 'soto', 'sop', 'ayam', 'ikan', 'sego', 'burger', 'pizza', 'martabak', 'batagor', 'seblak', 'caf', 'resto', 'kantin'],
+  transport: ['transport', 'parkir', 'bensin', 'bbm', 'tol', 'karcis', 'ojol', 'gojek', 'grab', 'bus', 'kereta', 'ktmu', 'krl', 'angkot', 'travel', 'bensin'],
+  belanja: ['belanja', 'beli', 'pembelian', 'tokopedia'],
+  tagihan: ['tagihan', 'listrik', 'pln', 'pdam', 'air', 'internet', 'wifi', 'sewa', 'kos', 'kredit', 'cicilan', 'paylater', 'pulsa', 'paket'],
+  hiburan: ['hiburan', 'nonton', 'bioskop', 'game', 'karaoke', 'liburan', 'hotel', 'staycation'],
+  kesehatan: ['kesehatan', 'obat', 'dokter', 'apotek', 'vitamin'],
+  pendidikan: ['pendidikan', 'kuliah', 'sekolah', 'spp', 'kursus', 'buku', 'les'],
+  gaji: ['gaji', 'upah', 'pendapatan', 'honor', 'insentif'],
+  bonus: ['bonus'],
+  transfer: ['transfer', 'kiriman'],
+  hadiah: ['hadiah', 'kado', 'undian', 'menang', 'kemenangan'],
+  investasi: ['investasi', 'dividen', 'saham', 'deposito'],
+};
+
+// Nama akun (bank/e-wallet/tunai) yang dikenali otomatis di dalam pesan.
+const DEFAULT_ACCOUNTS = ['bca', 'bri', 'bni', 'btn', 'mandiri', 'permata', 'danamon', 'jenius', 'jago', 'sea', 'gopay', 'ovo', 'dana', 'shopeepay', 'atm', 'tunai', 'cash', 'rekening', 'emas'];
+// Kata kerja yang dibuang dari catatan (termasuk berimbuhan: beliin, bayarin, jajanin).
+const ACTION_WORDS = /\b(?:beli(?:in|an|nya)?|bayar(?:in|annya)?|jajan(?:an|in)?|uang masuk|uang keluar|duit masuk|duit keluar)\b/gi;
 const ALIAS = {
   expenses: ['keluar', 'out', 'pengeluaran', 'e'],
   income: ['masuk', 'in', 'pemasukan', 'i'],
@@ -20,6 +46,7 @@ const ALIAS = {
   delete: ['hapus', 'delete', 'd'],
   help: ['help', 'bantuan', 'menu', 'h'],
   archive: ['arsip', 'riwayat tutup'],
+  account: ['akun', 'account'],
 };
 
 function matchAlias(cmd, list) {
@@ -29,6 +56,52 @@ function matchAlias(cmd, list) {
 function parseArgs(text) {
   const parts = text.trim().split(/\s+/);
   return { cmd: (parts[0] || '').toLowerCase(), rest: parts.slice(1) };
+}
+
+// Tentukan arah dari kalimat natural (tanpa perintah kaku). Kata pemicu yang
+// muncul lebih dulu menang — mis. "bayar gaji" → bayar(keluar) lebih dulu → pengeluaran.
+// Awalan juga dihitung ("gajian" → gaji, "beliin" → beli) selama sisanya pendek.
+function matchTrigger(word, set) {
+  if (set.has(word)) return true;
+  for (const t of set) {
+    if (word.length > t.length && word.length - t.length <= 3 && word.startsWith(t)) return true;
+  }
+  return false;
+}
+
+function classifyNatural(text) {
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().split(/\s+/);
+  for (const w of words) {
+    if (matchTrigger(w, NAT_IN_WORDS)) return 'income';
+    if (matchTrigger(w, NAT_OUT_WORDS)) return 'expenses';
+  }
+  return null;
+}
+
+// Cocokkan kategori dari kata-kata dalam catatan (paling spesifik lebih dulu).
+function guessCategory(type, haystack) {
+  const list = type === 'income' ? KATEGORI_PEMASUKAN : KATEGORI_PENGELUARAN;
+  const tokens = haystack.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().split(/\s+/);
+  for (const cat of list) {
+    const hints = CATEGORY_HINTS[cat] || [cat];
+    if (tokens.some((t) => hints.includes(t)) || haystack.toLowerCase().includes(cat)) return cat;
+  }
+  return null;
+}
+
+// Ambil nama akun dari teks (mis. "bca", "gopay"). Dikembalikan {account, rest}.
+// Nama akun dinormalisasi lowercase; sisa teks mempertahankan huruf aslinya.
+function extractAccount(userIdAccounts, text) {
+  const known = new Set([...DEFAULT_ACCOUNTS, ...userIdAccounts.map((a) => a.toLowerCase())]);
+  const raw = text.split(/\s+/).filter(Boolean);
+  let account = null;
+  const rest = [];
+  for (const w of raw) {
+    const t = w.toLowerCase();
+    if (!account && known.has(t)) { account = t; continue; }
+    rest.push(w);
+  }
+  return { account, rest: rest.join(' ') };
 }
 
 function monthKey(date = new Date()) {
@@ -100,32 +173,42 @@ async function handleTransaction(userId, type, text) {
   let category = type === 'income' ? 'gaji' : 'lainnya';
   const hit = (type === 'income' ? KATEGORI_PEMASUKAN : KATEGORI_PENGELUARAN).find((k) => lower.includes(k));
   if (hit) category = hit;
+  // Kalau kata kategori kaku tidak ada, tebak dari kata-kata catatan ("bakso" → makan).
+  if (!hit) {
+    const sisa = text.replace(found.matched, ' ').replace(ACTION_WORDS, ' ');
+    const guessed = guessCategory(type, sisa);
+    if (guessed) category = guessed;
+  }
 
-  // Catatan = teks tanpa nominal dan tanpa kata kategori.
-  let note = text
-    .replace(found.matched, ' ')
+  // Nama akun: kenali dari teks + daftar akun milik user.
+  const userAccounts = await storage.listAccounts(userId);
+  const { account, rest: afterAccount } = extractAccount(userAccounts, text.replace(found.matched, ' '));
+
+  // Catatan = sisa teks tanpa nominal, tanpa akun, tanpa kata kategori/kata kerja/kata depan.
+  let note = afterAccount
     .replace(new RegExp(`\\b${category}\\b`, 'i'), ' ')
+    .replace(ACTION_WORDS, ' ')
+    .replace(/\b(?:dari|buat|untuk|sama|dengan)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   if (!note) note = 'tanpa catatan';
 
   const date = new Date().toISOString();
-  const id = await storage.addTx(userId, { type, amount: found.amount, category, note: note.slice(0, 100), date });
+  const id = await storage.addTx(userId, { type, amount: found.amount, category, account: account || null, note: note.slice(0, 100), date });
 
   const s = await storage.summary(userId, monthKey());
   const saldoBaru = s.totalIn - s.totalOut;
   const icon = type === 'income' ? '💰' : '🧾';
   const label = type === 'income' ? 'Pemasukan' : 'Pengeluaran';
-  return [
+  const lines = [
     `✅ *${label} tercatat!*`,
     '',
     `${icon} ${formatRupiah(found.amount)}`,
     `🏷 Kategori: _${category}_`,
-    `📝 Catatan: _${note}_`,
-    `#${id} · ${todayLabel()}`,
-    '',
-    `📊 Saldo: *${formatRupiah(saldoBaru)}*`,
-  ].join('\n');
+  ];
+  if (account) lines.push(`👤 Akun: _${account}_`);
+  lines.push(`📝 Catatan: _${note}_`, `#${id} · ${todayLabel()}`, '', `📊 Saldo: *${formatRupiah(saldoBaru)}*`);
+  return lines.join('\n');
 }
 
 // ---- Grafik batang ----
@@ -211,7 +294,7 @@ async function handleList(userId) {
     const icon = t.type === 'income' ? '💰' : '🧾';
     const tdate = new Date(t.created ?? t.date);
     lines.push(
-      `${icon} *${sign}${formatRupiah(Number(t.amount))}* _${t.note}_ (${t.category})\n   #${t.id} · ${dayLabel(tdate)} ${timeLabel(tdate)}`
+      `${icon} *${sign}${formatRupiah(Number(t.amount))}* _${t.note}_ (${t.category}${t.account ? ` · ${t.account}` : ''})\n   #${t.id} · ${dayLabel(tdate)} ${timeLabel(tdate)}`
     );
   }
   return lines.join('\n');
@@ -251,15 +334,95 @@ async function handleBalance(userId) {
   return lines.join('\n');
 }
 
+// ---- Akun / dompet ----
+// "akun" → daftar semua akun + saldo; "akun bca" → rincian satu akun; "akun baru celengan" → buat akun manual.
+async function handleAccounts(userId, text) {
+  const arg = text.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  if (arg.startsWith('baru ') || arg.startsWith('tambah ')) {
+    const name = arg.replace(/^(?:baru|tambah)\s+/, '').trim();
+    if (!name) return '⚠️ Sebutkan namanya.\nContoh: _akun baru celengan_';
+    if (/\d/.test(name)) return '⚠️ Nama akun tidak boleh mengandung angka.';
+    await storage.addAccount(userId, name);
+    return `👤 Akun *${name}* dibuat.\nLangsung pakai: _beli kopi 10rb ${name}_`;
+  }
+
+  const balances = await storage.accountBalances(userId);
+  const named = balances.filter((b) => b.account);
+  const noAccount = balances.find((b) => !b.account);
+
+  if (arg) {
+    // rincian satu akun
+    const found = named.find((b) => b.account === arg);
+    if (!found) {
+      const known = await storage.listAccounts(userId);
+      if (known.map((k) => k.toLowerCase()).includes(arg)) {
+        return `👤 Akun *${arg}* terdaftar tapi belum ada transaksi.\nCatat: _beli kopi ${arg} 10rb_`;
+      }
+      if (named.length === 0)
+        return '👤 *Belum ada akun.*\nAkun otomatis dibuat saat kamu menulis nama akun di transaksi:\n_bayar bakso bca 20rb_';
+      return `❌ Akun *${arg}* tidak ditemukan.\nYang ada: ${known.join(', ')}`;
+    }
+    const lines = [
+      `👤 *AKUN ${found.account.toUpperCase()}*`,
+      `💵 Saldo: *${formatRupiah(found.balance)}*`,
+      '',
+      `🧾 *5 transaksi terakhir:*`,
+    ];
+    const txs = await storage.accountTx(userId, arg, 5);
+    for (const t of txs) {
+      const sign = t.type === 'income' ? '+' : '-';
+      const tdate = new Date(t.created ?? t.date);
+      lines.push(`${t.type === 'income' ? '💰' : '🧾'} *${sign}${formatRupiah(Number(t.amount))}* _${t.note}_ · #${t.id} ${dayLabel(tdate)}`);
+    }
+    return lines.join('\n');
+  }
+
+  if (named.length === 0) {
+    return [
+      '👤 *Belum ada akun.*',
+      '',
+      'Nama akun cukup ditulis di dalam transaksi:',
+      '_uang masuk 5jt dari bca_',
+      '_bayar bakso bca 20rb_',
+      '_beli kopi gopay 10rb_',
+      '',
+      'Buat akun manual: _akun baru celengan_',
+    ].join('\n');
+  }
+  const lines = ['👤 *DAFTAR AKUN*', ''];
+  for (const b of named) {
+    lines.push(`💼 *${b.account}*: ${formatRupiah(b.balance)} · ${b.count} transaksi`);
+  }
+  if (noAccount) lines.push(`📦 _tanpa akun_: ${formatRupiah(noAccount.balance)} · ${noAccount.count} transaksi`);
+  const known = await storage.listAccounts(userId);
+  const unused = known.filter((k) => !named.some((b) => b.account === k.toLowerCase()));
+  if (unused.length) lines.push('', `_Terdaftar, belum dipakai: ${unused.join(', ')}_`);
+  lines.push('', `Total: *${formatRupiah(balances.reduce((a, b) => a + b.balance, 0))}*`);
+  lines.push('Rincian: _akun <nama>_');
+  return lines.join('\n');
+}
+
 // ---- Bantuan ----
 function handleHelp() {
   return [
     '💼 *NOOJI BOT KEUANGAN*',
     'Asisten keuangan pribadi via WhatsApp',
     '',
-    '*📝 Catat transaksi*',
-    '_out 50rb makan siang_ → catat pengeluaran',
-    '_in 5jt gaji bulanan_ → catat pemasukan',
+    '*📝 Catat — pakai bahasa bebas*',
+    '_uang masuk 10rb gaji bulanan_ → pemasukan',
+    '_gaji bulanan 10rb_ → pemasukan',
+    '_parkir 2k_ → pengeluaran',
+    '_beli bakso dan esteh 20rb_ → pengeluaran',
+    '_out 50rb makan siang_ / _in 5jt gaji_ → tetap bisa',
+    '',
+    '*👤 Multi-akun (bank/e-wallet/tunai)*',
+    'Sebutkan akunnya di dalam pesan:',
+    '_bayar bakso bca 20rb_',
+    '_uang masuk 5jt dari mandiri_',
+    '_akun_ → daftar akun & saldo masing-masing',
+    '_akun bca_ → rincian akun bca',
+    '_akun baru celengan_ → buat akun manual',
     '',
     '*📊 Laporan*',
     '_laporan_ → rekap bulan ini + grafik',
@@ -369,6 +532,16 @@ async function processMessage(userId, text) {
   // Format bebas: "+ 20rb kopi" / "- 5jt"
   if (cmd === '+') return handleTransaction(userId, 'income', restText);
   if (cmd === '-') return handleTransaction(userId, 'expenses', restText);
+  if (matchAlias(cmd, ALIAS.account)) return handleAccounts(userId, restText);
+
+  // Bahasa natural: kalimat biasa yang mengandung nominal + kata arah.
+  // "uang masuk 10rb" "gaji bulanan 3jt" "parkir 2k" "beli bakso dan esteh 20rb"
+  // Tanpa kata arah pun jalan kalau nomina cocok dengan kategori pengeluaran: "bakso bca 20rb".
+  if (extractAmount(text)) {
+    let dir = classifyNatural(text);
+    if (!dir && guessCategory('expenses', text)) dir = 'expenses';
+    if (dir) return handleTransaction(userId, dir, text);
+  }
 
   return [
     `🤔 Perintah tidak dikenali: _${text.slice(0, 40)}_`,

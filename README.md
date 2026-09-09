@@ -19,7 +19,7 @@ Variabel yang dibutuhkan — **sama seperti semula, tidak ada penambahan**:
 1. Buat project → add service dari repo ini
 2. Add **PostgreSQL** dari marketplace Railway
 3. Di service bot → tab Variables → tambah `DATABASE_URL` tipe **Reference Variable** yang menunjuk ke variabel `DATABASE_URL` milik service PostgreSQL (mis. `${PostgreSQL.DATABASE_URL}`) — Railway **tidak** menyuntiknya otomatis
-4. Isi 4 ENV lainnya, lalu Redeploy — skema tabel (`transactions`, `budgets`, `closed_months`) dibuat otomatis saat startup
+4. Isi 4 ENV lainnya, lalu Redeploy — skema tabel (`transactions`, `accounts`, `budgets`, `closed_months`) dibuat otomatis saat startup
 
 Kalau `DATABASE_URL` kosong (misal jalan lokal), bot otomatis fallback ke file `data/db.json`.
 
@@ -36,9 +36,13 @@ Set endpoint webhook di Meta App ke: `https://domain-kamu.com/webhook`
 
 | Perintah | Contoh | Hasil |
 |---|---|---|
-| Catat keluar | `out 50rb makan siang` | Rp 50.000 · kategori makan |
-| Catat masuk | `in 5jt gaji` | Rp 5.000.000 · kategori gaji |
-| Format singkat | `20rb` `1,5jt` `10.000` | Terdeteksi otomatis |
+| Catat keluar | `out 50rb makan siang` · `parkir 2k` · `beli bakso dan esteh 20rb` | Pengeluaran, kategori otomatis |
+| Catat masuk | `in 5jt gaji` · `uang masuk 10rb` · `gaji bulanan 10rb` | Pemasukan, kategori otomatis |
+| Multi-akun | `bayar bakso bca 20rb` · `uang masuk 5jt dari mandiri` | Akun (bank/e-wallet) tercatat otomatis |
+| Daftar akun | `akun` | Saldo per akun/dompet |
+| Rincian akun | `akun bca` | Saldo + 5 transaksi terakhir akun itu |
+| Buat akun | `akun baru celengan` | Tambah akun manual |
+| Format singkat | `20rb` `2k` `1,5jt` `10.000` | Terdeteksi otomatis |
 | Laporan | `laporan` / `laporan agustus` | Rekap + grafik kategori |
 | Saldo | `saldo` | Ringkasan & rata-rata harian |
 | Transaksi | `transaksi` | 8 transaksi terakhir |
