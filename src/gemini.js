@@ -68,7 +68,8 @@ const RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
     intent: { type: 'string', enum: ['command', 'transaction', 'chat'] },
-    command: { type: 'string', enum: [...COMMANDS, ''] },
+    // Catatan: Gemini menolak '' di dalam enum — pakai sentinel "none" untuk "bukan command".
+    command: { type: 'string', enum: [...COMMANDS, 'none'] },
     args: { type: 'string' },
     type: { type: 'string', enum: ['income', 'expenses', 'none'] },
     amount: { type: 'integer' },
