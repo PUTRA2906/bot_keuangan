@@ -1,4 +1,4 @@
-// Konfigurasi pusat — HANYA memakai variabel ENV yang sudah ada, tidak ada penambahan.
+// Konfigurasi pusat — semua membaca process.env, dengan fallback aman.
 require('dotenv').config();
 
 const config = {
@@ -11,6 +11,10 @@ const config = {
   databaseUrl: process.env.DATABASE_URL,
   graphApiVersion: 'v20.0',
   timezone: 'Asia/Jakarta',
+  // Gemini AI (opsional) — fallback pemahaman bahasa natural saat parsing lokal menyerah.
+  // Ambil key di https://aistudio.google.com/apikey. Kosong = fitur mati, bot tetap jalan.
+  geminiApiKey: process.env.GEMINI_API_KEY,
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
 };
 
 // Validasi saat startup — memberi peringatan jelas tanpa mengubah nama variabel.

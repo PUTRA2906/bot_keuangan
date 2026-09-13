@@ -4,8 +4,6 @@ Bot keuangan pribadi berbasis WhatsApp (Meta Cloud API). Catat pengeluaran/pemas
 
 ## ⚙️ Konfigurasi (ENV)
 
-Variabel yang dibutuhkan — **sama seperti semula, tidak ada penambahan**:
-
 | Variabel | Fungsi |
 |---|---|
 | `PORT` | Port server (default `3000`) |
@@ -13,6 +11,17 @@ Variabel yang dibutuhkan — **sama seperti semula, tidak ada penambahan**:
 | `GRAPH_API_TOKEN` | Access token Meta Graph API |
 | `PHONE_NUMBER_ID` | ID nomor WhatsApp Business |
 | `DATABASE_URL` | Opsional — koneksi PostgreSQL (di Railway diisi manual sebagai *Reference Variable*) |
+| `GEMINI_API_KEY` | Opsional — aktifkan fallback AI (buat di [Google AI Studio](https://aistudio.google.com/apikey)) |
+| `GEMINI_MODEL` | Opsional — model Gemini (default `gemini-2.5-flash`) |
+
+### 🤖 Fallback AI (Gemini)
+
+Kalau `GEMINI_API_KEY` diisi, pesan yang **tidak dikenali parsing lokal** diterjemahkan oleh Gemini:
+
+- Kalimat bebas yang jelas mencatat transaksi → langsung tercatat, contoh: `kemarin jajan seblak sama teman dua puluh lima ribu pakai gopay`
+- Pertanyaan/sapaan → dijawab singkat, lalu diarahkan ke `menu`
+
+Perintah normal (`out 20rb kopi`, `laporan`, dll.) **tidak pernah** menyentuh AI — jadi hemat kuota dan tetap instan. Tanpa key, bot persis seperti sebelumnya.
 
 ## 🚀 Deploy ke Railway
 
@@ -69,6 +78,7 @@ index.js          # Server Express + webhook
 src/
   config.js       # Konfigurasi ENV
   bot.js          # Mesin perintah & balasan
+  gemini.js       # Fallback AI: interpretasi bahasa natural via Gemini
   money.js        # Parser nominal gaya Indonesia
   storage.js      # PostgreSQL (Railway) + fallback JSON (data/db.json)
   whatsapp.js     # Pengiriman pesan via Graph API

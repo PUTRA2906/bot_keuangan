@@ -3,6 +3,8 @@
 const { extractAmount, formatRupiah, formatShort } = require('./money');
 const storage = require('./storage');
 const { sendText } = require('./whatsapp');
+const { config } = require('./config');
+const { interpretMessage } = require('./gemini');
 
 // ---- Domain ----
 const KATEGORI_PENGELUARAN = [
@@ -541,6 +543,22 @@ async function processMessage(userId, text) {
     let dir = classifyNatural(text);
     if (!dir && guessCategory('expenses', text)) dir = 'expenses';
     if (dir) return handleTransaction(userId, dir, text);
+  }
+
+  // Fallback AI — parsing lokal menyerah, minta Gemini menginterpretasi pesan.
+  // Nonaktif kalau GEMINI_API_KEY kosong: perilaku persis seperti tanpa AI.
+  if (config.geminiApiKey) {
+    const userAccounts = await storage.listAccounts(userId);
+    const ai = await interpretMessage(text, { accounts: userAccounts });
+    if (ai?.intent === 'transaction') {
+      // Rekonstruksi teks netral supaya pipeline handleTransaction yang ada
+      // tetap dipakai penuh (cek bulan terkunci, kategori, saldo, balasan).
+      const reconstructed = [ai.category, ai.account || '', ai.note, String(ai.amount)]
+        .filter(Boolean)
+        .join(' ');
+      return handleTransaction(userId, ai.type, reconstructed);
+    }
+    if (ai?.intent === 'chat') return ai.reply;
   }
 
   return [
