@@ -25,24 +25,27 @@ function buildSystemPrompt(accounts) {
     `   - category untuk income harus salah satu: ${KATEGORI_PEMASUKAN.join(', ')}.`,
     `   - account hanya boleh dari yang dikenal user: ${akunn} — selain itu kosongkan.`,
     '2. "chat" — selain itu (pertanyaan, sapaan, perintah tidak jelas). Isi field "reply" dengan jawaban ramah maksimal 2 kalimat; jika pesan bukan pertanyaan yang bisa kamu jawab, akhiri dengan saran ketik "menu".',
-    '3. Untuk transaksi, biarkan field chat dan sebaliknya kosong string.',
+    '3. Semua field wajib selalu ada di JSON: untuk transaction isi reply kosong string ""; untuk chat isi type "", amount 0, category "", account "", note "".',
     '4. Kamu hanya memahami teks — tidak pernah mengeksekusi apa pun. Jangan pernah mengubah saldo atau menyebut angka saldo.',
     '5. Semua teks balasan memakai bahasa Indonesia santai.',
   ].join('\n');
 }
 
+// CATATAN: Gemini menolak (400) responseSchema berisi field opsional —
+// SEMUA properties wajib ada di `required`. Untuk intent chat, fields
+// transaksi diisi kosong ("", amount 0); sebaliknya untuk transaction.
 const RESPONSE_SCHEMA = {
-  type: 'OBJECT',
+  type: 'object',
   properties: {
-    intent: { type: 'STRING', enum: ['transaction', 'chat'] },
-    type: { type: 'STRING', enum: ['income', 'expenses', ''] },
-    amount: { type: 'INTEGER' },
-    category: { type: 'STRING' },
-    account: { type: 'STRING' },
-    note: { type: 'STRING' },
-    reply: { type: 'STRING' },
+    intent: { type: 'string', enum: ['transaction', 'chat'] },
+    type: { type: 'string', enum: ['income', 'expenses', ''] },
+    amount: { type: 'integer' },
+    category: { type: 'string' },
+    account: { type: 'string' },
+    note: { type: 'string' },
+    reply: { type: 'string' },
   },
-  required: ['intent'],
+  required: ['intent', 'type', 'amount', 'category', 'account', 'note', 'reply'],
 };
 
 // Validasi & normalisasi output Gemini — apa pun yang mencurigakan dibuang (return null).
@@ -99,8 +102,9 @@ async function interpretMessage(text, { accounts = [] } = {}) {
     if (!body) return null;
     return sanitize(JSON.parse(body), accounts);
   } catch (err) {
-    const status = err.response?.status;
-    console.error(`[GEMINI] Gagal (status ${status || '-'}):`, err.message);
+    // Tampilkan detail dari API (mis. alasan 400 pada responseSchema) supaya mudah didiagnosis.
+    const detail = err.response?.data?.error?.message || err.response?.data || err.message;
+    console.error(`[GEMINI] Gagal (status ${err.response?.status || '-'}):`, typeof detail === 'string' ? detail : JSON.stringify(detail));
     return null;
   }
 }
