@@ -13,6 +13,19 @@ const MAX_AMOUNT = 1e12;
 const KATEGORI_PENGELUARAN = ['makan', 'transport', 'belanja', 'tagihan', 'hiburan', 'kesehatan', 'pendidikan', 'lainnya'];
 const KATEGORI_PEMASUKAN = ['gaji', 'bonus', 'transfer', 'hadiah', 'investasi', 'lainnya'];
 
+// Ringkasan fitur bot — dipakai Gemini untuk menjawab pertanyaan "cara pakai".
+// Sinkronkan dengan handleHelp() di src/bot.js bila perintah berubah.
+const PANDUAN_BOT = [
+  'Catat transaksi (bahasa bebas): "uang masuk 10rb gaji", "parkir 2k", "beli bakso 20rb", "out 50rb makan", "in 5jt gaji". Simbol juga bisa: "+ 20rb gaji" (masuk), "- 20rb kopi" (keluar).',
+  'Akun/dompet: sebutkan di pesan ("bayar bakso bca 20rb"); "akun" = daftar akun & saldo; "akun bca" = rincian; "akun baru celengan" = buat akun. Akun juga otomatis dibuat saat namanya disebut di transaksi.',
+  'Laporan: "laporan" = rekap bulan ini + grafik; "laporan agustus" = bulan tertentu; "saldo" = saldo & statistik; "transaksi" = 8 transaksi terakhir.',
+  'Anggaran: "anggaran makan 1jt" = pasang budget; "anggaran" = cek status.',
+  'Hapus: "hapus <id>" (id ada di daftar transaksi).',
+  'Tutup buku: "tutup buku" = kunci bulan berjalan; "tutup agustus"; "arsip" = riwayat; "buka agustus" = buka lagi.',
+  'Kategori pengeluaran: makan, transport, belanja, tagihan, hiburan, kesehatan, pendidikan, lainnya. Pemasukan: gaji, bonus, transfer, hadiah, investasi, lainnya.',
+  '"menu" atau "bantuan" = daftar semua perintah.',
+].join('\n');
+
 function buildSystemPrompt(accounts) {
   const akunn = accounts.length ? accounts.join(', ') : 'bca, gopay, dana (umum)';
   return [
@@ -24,10 +37,14 @@ function buildSystemPrompt(accounts) {
     `   - category untuk expenses harus salah satu: ${KATEGORI_PENGELUARAN.join(', ')}.`,
     `   - category untuk income harus salah satu: ${KATEGORI_PEMASUKAN.join(', ')}.`,
     `   - account hanya boleh dari yang dikenal user: ${akunn} — selain itu kosongkan.`,
-    '2. "chat" — selain itu (pertanyaan, sapaan, perintah tidak jelas). Isi field "reply" dengan jawaban ramah maksimal 2 kalimat; jika pesan bukan pertanyaan yang bisa kamu jawab, akhiri dengan saran ketik "menu".',
-    '3. Semua field wajib selalu ada di JSON: untuk transaction isi reply kosong string ""; untuk chat isi type "", amount 0, category "", account "", note "".',
+    '2. "chat" — selain itu (sapaan, pertanyaan umum, ATAU pertanyaan seputar cara pakai bot ini). Isi field "reply" dengan jawaban ramah; jika pesan bukan pertanyaan yang bisa kamu jawab, akhiri dengan saran ketik "menu".',
+    '3. Semua field wajib selalu ada di JSON: untuk transaction isi reply kosong string ""; untuk chat isi type "none", amount 0, category "", account "", note "".',
     '4. Kamu hanya memahami teks — tidak pernah mengeksekusi apa pun. Jangan pernah mengubah saldo atau menyebut angka saldo.',
     '5. Semua teks balasan memakai bahasa Indonesia santai.',
+    '',
+    'Untuk intent "chat" yang menanyakan fitur/cara pakai bot (mis. "gimana cara catat pengeluaran?", "cara tambah akun dong", "kok laporan bulan lalu gak bisa dibuka?"), JAWAB spesifik berdasarkan panduan fitur berikut — jangan sekadar suruh ketik "menu". Maksimal 4 kalimat, sebutkan format perintah persis dalam tanda kutip bila relevan.',
+    'Panduan fitur bot:',
+    PANDUAN_BOT,
   ].join('\n');
 }
 
@@ -38,7 +55,7 @@ const RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
     intent: { type: 'string', enum: ['transaction', 'chat'] },
-    type: { type: 'string', enum: ['income', 'expenses', ''] },
+    type: { type: 'string', enum: ['income', 'expenses', 'none'] },
     amount: { type: 'integer' },
     category: { type: 'string' },
     account: { type: 'string' },
