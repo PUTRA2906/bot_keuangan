@@ -50,7 +50,7 @@ function buildSystemPrompt(accounts) {
     '3. "chat" — sapaan, opini, pertanyaan cara pakai bot, atau hal di luar dua intent di atas. Isi "reply".',
     '',
     'Aturan umum:',
-    '- Semua field wajib ada di JSON: transaction → reply "" dan command ""; chat → type "none", amount 0, category "", account "", note "", command ""; command → type "none", amount 0, sisanya "".',
+    '- Semua field wajib ada di JSON. Field enum kosong ditulis "none": transaction → reply "" dan command "none" dan args ""; chat → type "none", amount 0, category "", account "", note "", command "none", args ""; command → type "none", amount 0, category "", account "", note "", reply "".',
     '- Ambiguo antara command dan transaction? Jika menyebut NOMINAL BELANJA/masuk → transaction. Jika bertanya angka/data → command.',
     '- Untuk chat cara pakai bot, JAWAB spesifik dari panduan fitur di bawah (maks 4 kalimat, sebutkan format perintah persis) — jangan sekadar suruh ketik "menu".',
     '- Kamu hanya memahami teks — tidak pernah mengeksekusi atau menyebut angka saldo asli.',
