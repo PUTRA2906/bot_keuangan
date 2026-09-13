@@ -14,7 +14,7 @@ const config = {
   // Gemini AI (opsional) — fallback pemahaman bahasa natural saat parsing lokal menyerah.
   // Ambil key di https://aistudio.google.com/apikey. Kosong = fitur mati, bot tetap jalan.
   geminiApiKey: process.env.GEMINI_API_KEY,
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite',
 };
 
 // Validasi saat startup — memberi peringatan jelas tanpa mengubah nama variabel.

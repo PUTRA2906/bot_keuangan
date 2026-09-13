@@ -509,8 +509,52 @@ async function handleReopenBook(userId, text) {
   return `📖 Bulan *${labelBulan(key)}* dibuka kembali.\nTransaksinya bisa diedit/dihapus lagi. Tutup ulang dengan _tutup buku ${key}_`;
 }
 
-// ---- Router utama ----
+// ---- Dispatcher output Gemini intent "command" ----
+// args sudah dinormalisasi sanitize() gemini.js (whitelist + slice).
+async function runCommand(userId, command, args) {
+  switch (command) {
+    case 'menu': return handleHelp();
+    case 'report': return handleReport(userId, args);
+    case 'balance': return handleBalance(userId);
+    case 'list': return handleList(userId);
+    case 'account': return handleAccounts(userId, args);
+    case 'budget': return handleBudget(userId, args);
+    case 'delete': return handleDelete(userId, args);
+    case 'close': return handleCloseBook(userId, args);
+    case 'reopen': return handleReopenBook(userId, args);
+    case 'archive': return handleArchive(userId);
+    default: return null; // tak dikenal — jangan pernah eksekusi diam-diam
+  }
+}
+
+// ---- Router utama (full-AI) ----
+// Gemini memaham SEMUA pesan: transaction, command, atau chat.
+// Router parsing lokal di bawah HANYA cadangan (key kosong / Gemini error),
+// biar bot tetap hidup tanpa internet AI.
 async function processMessage(userId, text) {
+  if (config.geminiApiKey) {
+    const userAccounts = await storage.listAccounts(userId);
+    const ai = await interpretMessage(text, { accounts: userAccounts });
+    if (ai?.intent === 'transaction') {
+      // Rekonstruksi teks netral supaya pipeline handleTransaction yang ada
+      // tetap dipakai penuh (cek bulan terkunci, kategori, saldo, balasan).
+      const reconstructed = [ai.category, ai.account || '', ai.note, String(ai.amount)]
+        .filter(Boolean)
+        .join(' ');
+      return handleTransaction(userId, ai.type, reconstructed);
+    }
+    if (ai?.intent === 'command') {
+      const out = await runCommand(userId, ai.command, ai.args);
+      if (out !== null) return out;
+    }
+    if (ai?.intent === 'chat') return ai.reply;
+    // ai === null → Gemini error/timeout; sengaja tidak fallback ke parsing
+    // lokal di sini supaya tidak ada perilaku "setengah-setengah": kalau
+    // output Gemini cacat, pesan dianggap tak dikenali, bukan diam-diam
+    // dicoba parser lama (yang bisa salah tafsir).
+  }
+
+  // ---- Jalur cadangan: parsing lokal (Gemini mati/key kosong) ----
   const lower = text.trim().toLowerCase();
   const { cmd, rest } = parseArgs(text);
   const restText = rest.join(' ');
@@ -537,28 +581,10 @@ async function processMessage(userId, text) {
   if (matchAlias(cmd, ALIAS.account)) return handleAccounts(userId, restText);
 
   // Bahasa natural: kalimat biasa yang mengandung nominal + kata arah.
-  // "uang masuk 10rb" "gaji bulanan 3jt" "parkir 2k" "beli bakso dan esteh 20rb"
-  // Tanpa kata arah pun jalan kalau nomina cocok dengan kategori pengeluaran: "bakso bca 20rb".
   if (extractAmount(text)) {
     let dir = classifyNatural(text);
     if (!dir && guessCategory('expenses', text)) dir = 'expenses';
     if (dir) return handleTransaction(userId, dir, text);
-  }
-
-  // Fallback AI — parsing lokal menyerah, minta Gemini menginterpretasi pesan.
-  // Nonaktif kalau GEMINI_API_KEY kosong: perilaku persis seperti tanpa AI.
-  if (config.geminiApiKey) {
-    const userAccounts = await storage.listAccounts(userId);
-    const ai = await interpretMessage(text, { accounts: userAccounts });
-    if (ai?.intent === 'transaction') {
-      // Rekonstruksi teks netral supaya pipeline handleTransaction yang ada
-      // tetap dipakai penuh (cek bulan terkunci, kategori, saldo, balasan).
-      const reconstructed = [ai.category, ai.account || '', ai.note, String(ai.amount)]
-        .filter(Boolean)
-        .join(' ');
-      return handleTransaction(userId, ai.type, reconstructed);
-    }
-    if (ai?.intent === 'chat') return ai.reply;
   }
 
   return [

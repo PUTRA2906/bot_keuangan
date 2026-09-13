@@ -1,5 +1,5 @@
-// Klien Gemini AI — fallback pemahaman bahasa natural.
-// Dipanggil HANYA saat router parsing lokal di bot.js menyerah, jadi hemat kuota.
+// Klien Gemini AI — pemaham utama SEMUA pesan user (mode full-AI).
+// Router lokal di bot.js hanya jadi cadangan saat key kosong / Gemini error.
 // Tanpa SDK: REST generateContent via axios (sudah jadi dependency Graph API).
 const axios = require('axios');
 const { config } = require('./config');
@@ -12,6 +12,10 @@ const MAX_AMOUNT = 1e12;
 // tidak perlu mengimpor bot.js (menghindari circular dependency).
 const KATEGORI_PENGELUARAN = ['makan', 'transport', 'belanja', 'tagihan', 'hiburan', 'kesehatan', 'pendidikan', 'lainnya'];
 const KATEGORI_PEMASUKAN = ['gaji', 'bonus', 'transfer', 'hadiah', 'investasi', 'lainnya'];
+
+// Perintah bot yang bisa di-route lewat Gemini (intent "command").
+// Nilai -> handler di src/bot.js (lihat runCommand).
+const COMMANDS = ['menu', 'report', 'balance', 'list', 'account', 'budget', 'delete', 'close', 'reopen', 'archive'];
 
 // Ringkasan fitur bot — dipakai Gemini untuk menjawab pertanyaan "cara pakai".
 // Sinkronkan dengan handleHelp() di src/bot.js bila perintah berubah.
@@ -30,19 +34,28 @@ function buildSystemPrompt(accounts) {
   const akunn = accounts.length ? accounts.join(', ') : 'bca, gopay, dana (umum)';
   return [
     'Kamu adalah pemaham pesan untuk Nooji, bot keuangan pribadi via WhatsApp berbahasa Indonesia.',
-    'Tugasmu: baca SATU pesan user, lalu balas HANYA dengan JSON sesuai skema.',
+    'Kamu menerima SETIAP pesan user dan yang menentukan maksudnya. Balas HANYA dengan satu objek JSON mentah sesuai skema — tanpa teks pembuka/penutup, tanpa code fence markdown.',
     '',
-    'Aturan intent:',
-    '1. "transaction" — jika pesan mencatat pengeluaran/pemasukan dengan nominal yang bisa dipastikan (angka atau kata, mis. "25rb", "dua puluh lima ribu"). Isi: type ("expenses" untuk keluar, "income" untuk masuk), amount (angka rupiah penuh, bilangan bulat), category, account (nama akun/dompet jika disebut, huruf kecil; kosongkan jika tidak), note (sisa kalimat tanpa nominal/akun, maksimal 100 karakter).',
-    `   - category untuk expenses harus salah satu: ${KATEGORI_PENGELUARAN.join(', ')}.`,
-    `   - category untuk income harus salah satu: ${KATEGORI_PEMASUKAN.join(', ')}.`,
-    `   - account hanya boleh dari yang dikenal user: ${akunn} — selain itu kosongkan.`,
-    '2. "chat" — selain itu (sapaan, pertanyaan umum, ATAU pertanyaan seputar cara pakai bot ini). Isi field "reply" dengan jawaban ramah; jika pesan bukan pertanyaan yang bisa kamu jawab, akhiri dengan saran ketik "menu".',
-    '3. Semua field wajib selalu ada di JSON: untuk transaction isi reply kosong string ""; untuk chat isi type "none", amount 0, category "", account "", note "".',
-    '4. Kamu hanya memahami teks — tidak pernah mengeksekusi apa pun. Jangan pernah mengubah saldo atau menyebut angka saldo.',
-    '5. Semua teks balasan memakai bahasa Indonesia santai.',
+    'Aturan intent (pilih salah satu):',
+    '1. "command" — jika user meminta aksi laporan/data bot: melihat daftar atau angka (bukan mencatat nominal baru). Pemetaan:',
+    `   - "menu" (bantuan, apa saja yang bisa kamu lakukan), "report" ("laporan <bulan?>" — rekap bulanan), "balance" ("saldo", "berapa uangku sekarang"), "list" ("transaksi terakhir"),`,
+    `   - "account" ("akun", "akun <nama>", "akun baru <nama>" → args: "baru <nama>" / "<nama>" / ""),`,
+    `   - "budget" ("anggaran" cek → args: ""; "anggaran makan 1jt" pasang → args: "makan 1jt"),`,
+    `   - "delete" ("hapus transaksi nomor 3" → args: "3"),`,
+    `   - "close" ("tutup buku <bulan?>"), "reopen" ("buka <bulan>"), "archive" ("arsip").`,
+    '   Isi command + args (args = sisa yang diperlukan handler, mis. id, nama akun, nominal; kosongkan jika tidak ada).',
+    '2. "transaction" — mencatat pengeluaran/pemasukan dengan nominal (angka atau kata, mis. "25rb", "dua puluh lima ribu"). Isi: type ("expenses" keluar / "income" masuk), amount (rupiah penuh, bulat), category, account (huruf kecil, kosongkan jika tidak disebut), note (sisa kalimat tanpa nominal/akun, maks 100 karakter).',
+    `   - category expenses salah satu: ${KATEGORI_PENGELUARAN.join(', ')}; category income salah satu: ${KATEGORI_PEMASUKAN.join(', ')}.`,
+    `   - account hanya dari yang dikenal: ${akunn} — selain itu kosongkan.`,
+    '3. "chat" — sapaan, opini, pertanyaan cara pakai bot, atau hal di luar dua intent di atas. Isi "reply".',
     '',
-    'Untuk intent "chat" yang menanyakan fitur/cara pakai bot (mis. "gimana cara catat pengeluaran?", "cara tambah akun dong", "kok laporan bulan lalu gak bisa dibuka?"), JAWAB spesifik berdasarkan panduan fitur berikut — jangan sekadar suruh ketik "menu". Maksimal 4 kalimat, sebutkan format perintah persis dalam tanda kutip bila relevan.',
+    'Aturan umum:',
+    '- Semua field wajib ada di JSON: transaction → reply "" dan command ""; chat → type "none", amount 0, category "", account "", note "", command ""; command → type "none", amount 0, sisanya "".',
+    '- Ambiguo antara command dan transaction? Jika menyebut NOMINAL BELANJA/masuk → transaction. Jika bertanya angka/data → command.',
+    '- Untuk chat cara pakai bot, JAWAB spesifik dari panduan fitur di bawah (maks 4 kalimat, sebutkan format perintah persis) — jangan sekadar suruh ketik "menu".',
+    '- Kamu hanya memahami teks — tidak pernah mengeksekusi atau menyebut angka saldo asli.',
+    '- Bahasa Indonesia santai.',
+    '',
     'Panduan fitur bot:',
     PANDUAN_BOT,
   ].join('\n');
@@ -54,7 +67,9 @@ function buildSystemPrompt(accounts) {
 const RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
-    intent: { type: 'string', enum: ['transaction', 'chat'] },
+    intent: { type: 'string', enum: ['command', 'transaction', 'chat'] },
+    command: { type: 'string', enum: [...COMMANDS, ''] },
+    args: { type: 'string' },
     type: { type: 'string', enum: ['income', 'expenses', 'none'] },
     amount: { type: 'integer' },
     category: { type: 'string' },
@@ -62,7 +77,7 @@ const RESPONSE_SCHEMA = {
     note: { type: 'string' },
     reply: { type: 'string' },
   },
-  required: ['intent', 'type', 'amount', 'category', 'account', 'note', 'reply'],
+  required: ['intent', 'command', 'args', 'type', 'amount', 'category', 'account', 'note', 'reply'],
 };
 
 // Validasi & normalisasi output Gemini — apa pun yang mencurigakan dibuang (return null).
@@ -71,6 +86,11 @@ function sanitize(parsed, accounts) {
   if (parsed.intent === 'chat') {
     const reply = typeof parsed.reply === 'string' ? parsed.reply.trim().slice(0, 600) : '';
     return reply ? { intent: 'chat', reply } : null;
+  }
+  if (parsed.intent === 'command') {
+    if (!COMMANDS.includes(parsed.command)) return null;
+    const args = typeof parsed.args === 'string' ? parsed.args.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+    return { intent: 'command', command: parsed.command, args };
   }
   if (parsed.intent !== 'transaction') return null;
 
@@ -91,6 +111,23 @@ function sanitize(parsed, accounts) {
   return { intent: 'transaction', type, amount: Math.round(amount), category, account, note: note || 'catatan dari AI' };
 }
 
+// Beberapa model (terutama flash-lite) kadang mengabaikan responseMimeType dan
+// membalas prosa/"```json" di sekitar objeknya. Ambil substring {...} terluar.
+function parseModelJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start === -1 || end <= start) return null;
+    try {
+      return JSON.parse(text.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+}
+
 // Interpretasi pesan via Gemini. Return objek ternormalisasi, atau null
 // (key kosong / error / timeout / output tidak valid) — caller fallback ke balasan lama.
 async function interpretMessage(text, { accounts = [] } = {}) {
@@ -106,7 +143,8 @@ async function interpretMessage(text, { accounts = [] } = {}) {
           responseMimeType: 'application/json',
           responseSchema: RESPONSE_SCHEMA,
           temperature: 0.1,
-          maxOutputTokens: 300,
+          // 9 field wajib + reply chat bisa panjang; 300 terbukti memotong JSON di tengah.
+          maxOutputTokens: 1024,
         },
       },
       {
@@ -117,7 +155,12 @@ async function interpretMessage(text, { accounts = [] } = {}) {
     );
     const body = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!body) return null;
-    return sanitize(JSON.parse(body), accounts);
+    const parsed = parseModelJson(body);
+    if (!parsed) {
+      console.error('[GEMINI] Output bukan JSON:', JSON.stringify(body.slice(0, 200)));
+      return null;
+    }
+    return sanitize(parsed, accounts);
   } catch (err) {
     // Tampilkan detail dari API (mis. alasan 400 pada responseSchema) supaya mudah didiagnosis.
     const detail = err.response?.data?.error?.message || err.response?.data || err.message;
